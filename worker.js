@@ -9,6 +9,13 @@ const hubspotClient = new hubspot.Client({ accessToken: '' });
 const propertyPrefix = 'hubspot__';
 let expirationDate;
 
+const useNewIntegration = (process.env.USE_NEW_INSTEGRATION ?? true);
+
+const { HubSpotController } = require('./hubspot/hubspotController');
+const { HubSpotContactsController } = require('./hubspot/contacts/hubspotContactsController');
+const { HubSpotCompaniesController } = require('./hubspot/companies/hubspotCompaniesController');
+const { HubSpotMeetingsController } = require('./hubspot/meetings/hubspotMeetingsController');
+
 const generateLastModifiedDateFilter = (date, nowDate, propertyName = 'hs_lastmodifieddate') => {
   const lastModifiedDateFilter = date ?
     {
@@ -288,8 +295,47 @@ const drainQueue = async (domain, actions, q) => {
   return true;
 };
 
+
+const pullDataFromHubspotNew = async () => {
+  const domain = await Domain.findOne({});
+  const actions = [];
+  const q = createQueue(domain, actions);
+  for (const account of domain.integrations.hubspot.accounts) {
+    console.log('start processing account');
+    let hubId = account.hubId;
+
+    let controller = new HubSpotController(domain, hubId, q);
+    let contracts = new HubSpotContactsController(controller);
+    let companies = new HubSpotCompaniesController(controller);
+    let meetings = new HubSpotMeetingsController(controller);
+
+    await contracts.processContacts()
+      .then(async () => await companies.processCompanies())
+      .then(async() => await meetings.processMeetings() )
+      .then(async () => {
+        controller.setOperation('drainQueue');
+        await drainQueue(domain, actions, q);
+        controller.setOperation('');
+        console.log('drain queue');
+
+      })
+      .catch((err) => {
+
+        console.log(err, { apiKey: domain.apiKey, metadata: { operation: controller.getOperation(), hubId: account.hubId } });
+
+      });
+  }
+
+}
+
 const pullDataFromHubspot = async () => {
   console.log('start pulling data from HubSpot');
+  if (useNewIntegration) {
+    console.log('start new Integration');
+    await pullDataFromHubspotNew();
+    console.log('end new Integration');
+    return;
+  }
 
   const domain = await Domain.findOne({});
 
